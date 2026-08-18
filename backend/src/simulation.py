@@ -38,6 +38,10 @@ class LocalSimulationService:
             completed_paths=0,
             total_paths=request.paths,
             target_nodes=request.target_nodes,
+            iteration=request.iteration,
+            parent_job_id=request.parent_job_id,
+            volatility_scale=request.volatility_scale,
+            hedge_ratio_percent=request.hedge_ratio_percent,
             created_at=now,
             updated_at=now,
         )
@@ -53,9 +57,9 @@ class LocalSimulationService:
         started = time.monotonic()
         try:
             stages = [
-                (JobStatus.SCALING, 8, 18),
-                (JobStatus.SCALING, 20, 62),
-                (JobStatus.RUNNING, 38, 100),
+                (JobStatus.SCALING, 8, min(job.target_nodes, 2)),
+                (JobStatus.SCALING, 20, min(job.target_nodes, 6)),
+                (JobStatus.RUNNING, 38, job.target_nodes),
                 (JobStatus.RUNNING, 58, job.target_nodes),
                 (JobStatus.RUNNING, 76, job.target_nodes),
                 (JobStatus.RUNNING, 91, job.target_nodes),
@@ -70,7 +74,11 @@ class LocalSimulationService:
                 job.updated_at = datetime.now(UTC)
 
             await asyncio.sleep(0.7)
-            baseline = SCENARIO_LOSSES[job.scenario]
+            baseline = _adjusted_baseline(
+                SCENARIO_LOSSES[job.scenario],
+                job.volatility_scale,
+                job.hedge_ratio_percent,
+            )
             jitter = random.Random(job.id).uniform(-1.2, 1.2)
             job.result = _build_result(baseline + jitter, time.monotonic() - started, job.total_paths)
             job.status = JobStatus.COMPLETED
@@ -125,3 +133,9 @@ def _build_result(baseline: float, elapsed: float, paths: int) -> SimulationResu
         },
     )
 
+
+def _adjusted_baseline(
+    baseline: float, volatility_scale: float, hedge_ratio_percent: float
+) -> float:
+    hedge_effect = 1 - hedge_ratio_percent / 100 * 0.8
+    return baseline * volatility_scale * hedge_effect

@@ -1,0 +1,13 @@
+.git
+.copilot-azure
+.env
+.env.*
+.venv
+node_modules
+dist
+__pycache__
+*.pyc
+*.tsbuildinfo
+infra
+*.md
+

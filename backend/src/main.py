@@ -1,9 +1,18 @@
+from pathlib import Path
+
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
+from .ai_candidate import infer_next_candidate
 from .azure_batch import AzureBatchConfigurationError, AzureBatchSimulationService
 from .config import get_settings
-from .models import RuntimeConfiguration, SimulationJob, SimulationRequest
+from .models import (
+    AiSimulationCandidate,
+    RuntimeConfiguration,
+    SimulationJob,
+    SimulationRequest,
+)
 from .simulation import LocalSimulationService
 
 settings = get_settings()
@@ -60,3 +69,22 @@ def get_simulation(job_id: str) -> SimulationJob:
     if not job:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="ジョブが見つかりません")
     return job
+
+
+@app.post(
+    "/api/simulations/{job_id}/next-candidate",
+    response_model=AiSimulationCandidate,
+)
+def create_next_candidate(job_id: str) -> AiSimulationCandidate:
+    job = local_service.get(job_id) or azure_service.get(job_id)
+    if not job:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="ジョブが見つかりません")
+    try:
+        return infer_next_candidate(job)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
+frontend_dist = Path(__file__).resolve().parents[2] / "frontend-dist"
+if frontend_dist.exists():
+    app.mount("/", StaticFiles(directory=frontend_dist, html=True), name="frontend")

@@ -39,11 +39,16 @@ interface Recommendation {
 interface SimulationJob {
   id: string;
   execution_mode: Mode;
+  iteration: number;
+  parent_job_id: string | null;
   status: JobStatus;
   progress: number;
   active_nodes: number;
   completed_paths: number;
   total_paths: number;
+  target_nodes: number;
+  volatility_scale: number;
+  hedge_ratio_percent: number;
   error: string | null;
   result: null | {
     baseline_loss_billion_yen: number;
@@ -56,6 +61,18 @@ interface SimulationJob {
     recommendations: Recommendation[];
     loss_contributors: Record<string, number>;
   };
+}
+
+interface AiSimulationCandidate {
+  source_job_id: string;
+  scenario: Scenario;
+  paths: number;
+  target_nodes: number;
+  volatility_scale: number;
+  hedge_ratio_percent: number;
+  predicted_loss_billion_yen: number;
+  selected_strategy: string;
+  reasoning: string;
 }
 
 const scenarios: { id: Scenario; label: string; detail: string; loss: string }[] = [
@@ -78,6 +95,10 @@ export function App() {
   const [mode, setMode] = useState<Mode>("local");
   const [config, setConfig] = useState<RuntimeConfig | null>(null);
   const [job, setJob] = useState<SimulationJob | null>(null);
+  const [firstJob, setFirstJob] = useState<SimulationJob | null>(null);
+  const [candidate, setCandidate] = useState<AiSimulationCandidate | null>(null);
+  const [candidateAttemptedJobId, setCandidateAttemptedJobId] = useState("");
+  const [candidateSubmitting, setCandidateSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [view, setView] = useState<"dashboard" | "architecture">("dashboard");
 
@@ -96,17 +117,41 @@ export function App() {
     const timer = window.setInterval(async () => {
       const response = await fetch(`/api/simulations/${job.id}`);
       if (response.ok) setJob(await response.json());
-    }, 500);
+    }, job.execution_mode === "azure" ? 5_000 : 500);
     return () => window.clearInterval(timer);
   }, [job]);
+
+  useEffect(() => {
+    if (
+      !job ||
+      job.execution_mode !== "azure" ||
+      job.iteration !== 1 ||
+      job.status !== "completed" ||
+      candidateAttemptedJobId === job.id
+    ) {
+      return;
+    }
+
+    setCandidateAttemptedJobId(job.id);
+    fetch(`/api/simulations/${job.id}/next-candidate`, { method: "POST" })
+      .then(async (response) => {
+        const body = await response.json();
+        if (!response.ok) throw new Error(body.detail ?? "AI候補の推論に失敗しました。");
+        setCandidate(body);
+      })
+      .catch((reason: Error) => setError(reason.message));
+  }, [candidateAttemptedJobId, job]);
 
   async function runSimulation() {
     setError("");
     setJob(null);
+    setFirstJob(null);
+    setCandidate(null);
+    setCandidateAttemptedJobId("");
     const response = await fetch("/api/simulations", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ scenario, paths: 5_000_000, target_nodes: 120, execution_mode: mode }),
+      body: JSON.stringify({ scenario, paths: 5_000_000, target_nodes: 10, execution_mode: mode }),
     });
     const body = await response.json();
     if (!response.ok) {
@@ -114,6 +159,41 @@ export function App() {
       return;
     }
     setJob(body);
+  }
+
+  async function runAiCandidate() {
+    if (!candidate || !job?.result || candidateSubmitting) return;
+
+    setError("");
+    const sourceJob = job;
+    setCandidateSubmitting(true);
+    try {
+      const response = await fetch("/api/simulations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          scenario: candidate.scenario,
+          paths: candidate.paths,
+          target_nodes: candidate.target_nodes,
+          execution_mode: "azure",
+          iteration: 2,
+          parent_job_id: candidate.source_job_id,
+          volatility_scale: candidate.volatility_scale,
+          hedge_ratio_percent: candidate.hedge_ratio_percent,
+        }),
+      });
+      const body = await response.json();
+      if (!response.ok) {
+        setError(body.detail ?? "2回目のAzure Batchジョブ投入に失敗しました。");
+        return;
+      }
+      setFirstJob(sourceJob);
+      setJob(body);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "2回目のAzure Batchジョブ投入に失敗しました。");
+    } finally {
+      setCandidateSubmitting(false);
+    }
   }
 
   if (view === "architecture") {
@@ -140,7 +220,7 @@ export function App() {
       <section className="hero">
         <div>
           <p className="eyebrow">FINANCIAL HPC × AI COMMAND CENTER</p>
-          <h1>市場急変を、<em>7分で意思決定</em>へ。</h1>
+          <h1>Azure Risk Simulation Portal</h1>
           <p className="lead">500万シナリオを並列評価。AIが対策を探索し、Azure HPCがその正しさを検証します。</p>
         </div>
         <div className="portfolio-card">
@@ -168,7 +248,7 @@ export function App() {
           <PanelTitle number="02" title="計算モード" icon={<CloudCog />} />
           <div className="mode-switch">
             <button className={mode === "local" ? "selected" : ""} onClick={() => setMode("local")}>
-              <Gauge /><strong>ローカル疑似実行</strong><span>デモ用・資格情報不要</span>
+              <Gauge /><strong>Local Cluster</strong><span>デモ用・資格情報不要</span>
             </button>
             <button className={mode === "azure" ? "selected" : ""} onClick={() => setMode("azure")}>
               <Zap /><strong>Azure Batch</strong><span>{config?.azure_batch_configured ? "実リソースで実行" : "Azure設定が必要"}</span>
@@ -176,7 +256,7 @@ export function App() {
           </div>
           <div className="workload">
             <div><span>Monte Carlo</span><b>5,000,000</b></div>
-            <div><span>目標ノード</span><b>120</b></div>
+            <div><span>目標ノード</span><b>10</b></div>
             <div><span>従来所要時間</span><b>4h 20m</b></div>
           </div>
           <button className="run-button" disabled={Boolean(running)} onClick={runSimulation}>
@@ -198,10 +278,10 @@ export function App() {
             <div className="progress-track"><i style={{ width: `${job?.progress ?? 0}%` }} /></div>
             <div className="progress-meta">
               <span>{formatPathCount(job?.completed_paths ?? 0)} / {formatPathCount(job?.total_paths ?? 5_000_000)} paths</span>
-              <span>{job?.execution_mode === "azure" ? "Azure Batch 実行" : "Local Demo Engine"}</span>
+              <span>{job?.execution_mode === "azure" ? `Azure Batch 第${job.iteration}回` : "Local Cluster"}</span>
             </div>
           </div>
-          <Metric icon={<Network />} label="ACTIVE NODES" value={`${job?.active_nodes ?? 0}`} unit="/ 120" accent />
+          <Metric icon={<Network />} label="ACTIVE NODES" value={`${job?.active_nodes ?? 0}`} unit="/ 10" accent />
           <Metric icon={<Gauge />} label="THROUGHPUT" value={result ? `${Math.round(result.evaluations_per_second / 1000)}K` : job ? `${Math.max(12, job.progress * 13)}K` : "0"} unit="eval/s" />
           <Metric icon={<CircleDollarSign />} label="EST. COST" value={`¥${result?.estimated_cost_yen.toLocaleString() ?? Math.round((job?.progress ?? 0) * 12)}`} unit="" />
         </div>
@@ -237,6 +317,43 @@ export function App() {
             ))}
             {!result && <div className="empty-state"><Bot /><strong>分析後にAI提案を表示</strong><span>候補生成 → 並列検証 → 最適案を比較</span></div>}
           </div>
+          {candidate && (
+            <div className="ai-candidate">
+              <div className="candidate-heading"><Sparkles /><span>AI NEXT PARAMETER</span><b>READY</b></div>
+              <strong>{candidate.selected_strategy}を次の探索点へ</strong>
+              <p>{candidate.reasoning}</p>
+              <div className="candidate-parameters">
+                <span>HEDGE<b>{candidate.hedge_ratio_percent.toFixed(1)}%</b></span>
+                <span>VOL SCALE<b>{candidate.volatility_scale.toFixed(2)}</b></span>
+                <span>NODES<b>{candidate.target_nodes}</b></span>
+                <span>PRED. LOSS<b>-¥{candidate.predicted_loss_billion_yen.toFixed(1)}億</b></span>
+              </div>
+              {job?.id === candidate.source_job_id && (
+                <button className="candidate-button" disabled={candidateSubmitting} onClick={runAiCandidate}>
+                  {candidateSubmitting ? <Activity className="spin" /> : <Zap />}
+                  {candidateSubmitting ? "2回目のジョブを投入中..." : "AI候補で2回目のAzure Batchを実行"}
+                  {!candidateSubmitting && <ChevronRight />}
+                </button>
+              )}
+              {job?.iteration === 2 && !["completed", "failed"].includes(job.status) && (
+                <div className="candidate-status"><Activity className="spin" />2回目のHPC厳密検証を実行中</div>
+              )}
+              {job?.iteration === 2 && job.status === "failed" && (
+                <div className="candidate-status error"><Zap />2回目の検証に失敗: {job.error ?? "Batchジョブを確認してください。"}</div>
+              )}
+              {job?.iteration === 2 && job.status === "completed" && firstJob?.result && result && (
+                <div className="candidate-comparison">
+                  <CheckCircle2 />
+                  <span>2回目の検証完了</span>
+                  <strong>
+                    VaR -¥{firstJob.result.value_at_risk_billion_yen.toFixed(1)}億
+                    <em> → </em>
+                    -¥{result.value_at_risk_billion_yen.toFixed(1)}億
+                  </strong>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </section>
 
@@ -275,7 +392,7 @@ function ArchitectureView({ onBack, config }: { onBack: () => void; config: Runt
         <div className="architecture-flow">
           {components.map(([title, detail], index) => <div className="architecture-node" key={title}><span>0{index + 1}</span><strong>{title}</strong><p>{detail}</p>{index < components.length - 1 && <ChevronRight />}</div>)}
         </div>
-        <div className="config-card"><CloudCog /><div><span>現在の実行先</span><strong>{config?.azure_batch_configured ? "Azure Batch接続準備完了" : "ローカル疑似実行"}</strong><p>Pool: {config?.azure_batch_pool_id ?? "finance-hpc-pool"}</p></div><b className={config?.azure_batch_configured ? "ready" : ""}>{config?.azure_batch_configured ? "READY" : "CONFIG REQUIRED"}</b></div>
+        <div className="config-card"><CloudCog /><div><span>現在の実行先</span><strong>{config?.azure_batch_configured ? "Azure Batch接続準備完了" : "Local Cluster"}</strong><p>Pool: {config?.azure_batch_pool_id ?? "finance-hpc-pool"}</p></div><b className={config?.azure_batch_configured ? "ready" : ""}>{config?.azure_batch_configured ? "READY" : "CONFIG REQUIRED"}</b></div>
       </section>
     </main>
   );

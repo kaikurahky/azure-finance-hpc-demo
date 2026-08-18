@@ -1,0 +1,52 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "environmentName": {
+      "value": "finhpc-dev-28e5"
+    },
+    "location": {
+      "value": "japaneast"
+    },
+    "sessionId": {
+      "value": "28e5fee0-6640-494e-b1b9-87306c722ed9"
+    },
+    "deployedBy": {
+      "value": "Hideaki Kuraishi"
+    },
+    "createdAt": {
+      "value": "2026-08-18T09:58:00Z"
+    },
+    "resourceGroupName": {
+      "value": "rg-finhpc-dev-28e5"
+    },
+    "containerEnvironmentName": {
+      "value": "cae-finhpc-dev-28e5"
+    },
+    "containerAppName": {
+      "value": "ca-finhpc-dev-28e5"
+    },
+    "containerRegistryName": {
+      "value": "crfinhpcdev28e5"
+    },
+    "batchAccountName": {
+      "value": "bthfinhpcdev28e5"
+    },
+    "batchPoolName": {
+      "value": "pool-finhpc-dev-28e5"
+    },
+    "storageAccountName": {
+      "value": "stfinhpcdev28e5"
+    },
+    "keyVaultName": {
+      "value": "kv-finhpc-dev-28e5"
+    },
+    "logAnalyticsName": {
+      "value": "log-finhpc-dev-28e5"
+    },
+    "applicationInsightsName": {
+      "value": "appi-finhpc-dev-28e5"
+    }
+  }
+}
+

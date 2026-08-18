@@ -24,8 +24,12 @@ class JobStatus(str, Enum):
 class SimulationRequest(BaseModel):
     scenario: ShockScenario = ShockScenario.LEHMAN
     paths: int = Field(default=5_000_000, ge=100_000, le=50_000_000)
-    target_nodes: int = Field(default=120, ge=1, le=1000)
+    target_nodes: int = Field(default=10, ge=1, le=10)
     execution_mode: Literal["local", "azure"] | None = None
+    iteration: int = Field(default=1, ge=1, le=2)
+    parent_job_id: str | None = None
+    volatility_scale: float = Field(default=1.0, ge=0.5, le=2.0)
+    hedge_ratio_percent: float = Field(default=0.0, ge=0.0, le=60.0)
 
 
 class HedgeRecommendation(BaseModel):
@@ -58,10 +62,26 @@ class SimulationJob(BaseModel):
     completed_paths: int
     total_paths: int
     target_nodes: int
+    iteration: int
+    parent_job_id: str | None = None
+    volatility_scale: float
+    hedge_ratio_percent: float
     created_at: datetime
     updated_at: datetime
     result: SimulationResult | None = None
     error: str | None = None
+
+
+class AiSimulationCandidate(BaseModel):
+    source_job_id: str
+    scenario: ShockScenario
+    paths: int
+    target_nodes: int
+    volatility_scale: float
+    hedge_ratio_percent: float
+    predicted_loss_billion_yen: float
+    selected_strategy: str
+    reasoning: str
 
 
 class RuntimeConfiguration(BaseModel):
@@ -69,4 +89,3 @@ class RuntimeConfiguration(BaseModel):
     azure_batch_configured: bool
     azure_batch_pool_id: str
     missing_azure_settings: list[str]
-

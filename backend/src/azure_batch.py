@@ -3,15 +3,30 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 from azure.batch import BatchServiceClient
-from azure.batch.batch_auth import SharedKeyCredentials
 from azure.batch.models import BatchErrorException, JobAddParameter, PoolInformation, TaskAddParameter
+from azure.identity import DefaultAzureCredential
+from msrest.authentication import BasicTokenAuthentication
 
 from .config import Settings
 from .models import JobStatus, SimulationJob, SimulationRequest
+from .simulation import SCENARIO_LOSSES, _adjusted_baseline, _build_result
 
 
 class AzureBatchConfigurationError(RuntimeError):
     pass
+
+
+class AzureIdentityBatchCredential(BasicTokenAuthentication):
+    def __init__(self) -> None:
+        super().__init__({"access_token": ""})
+        self._credential = DefaultAzureCredential()
+
+    def signed_session(self, session=None):
+        access_token = self._credential.get_token(
+            "https://batch.core.windows.net/.default"
+        )
+        self.token["access_token"] = access_token.token
+        return super().signed_session(session)
 
 
 class AzureBatchSimulationService:
@@ -25,11 +40,10 @@ class AzureBatchSimulationService:
             raise AzureBatchConfigurationError(
                 "Azure Batchモードに必要な設定がありません: " + ", ".join(missing)
             )
-        credentials = SharedKeyCredentials(
-            self.settings.azure_batch_account_name,
-            self.settings.azure_batch_account_key,
+        return BatchServiceClient(
+            AzureIdentityBatchCredential(),
+            batch_url=self.settings.azure_batch_account_url,
         )
-        return BatchServiceClient(credentials, batch_url=self.settings.azure_batch_account_url)
 
     def create(self, request: SimulationRequest) -> SimulationJob:
         client = self._client()
@@ -67,6 +81,10 @@ class AzureBatchSimulationService:
             completed_paths=0,
             total_paths=request.paths,
             target_nodes=request.target_nodes,
+            iteration=request.iteration,
+            parent_job_id=request.parent_job_id,
+            volatility_scale=request.volatility_scale,
+            hedge_ratio_percent=request.hedge_ratio_percent,
             created_at=now,
             updated_at=now,
         )
@@ -93,22 +111,26 @@ class AzureBatchSimulationService:
         job.status = JobStatus.COMPLETED if completed == total else JobStatus.RUNNING
         job.updated_at = datetime.now(UTC)
         if job.status == JobStatus.COMPLETED:
-            from .simulation import SCENARIO_LOSSES, _build_result
-
-            job.result = _build_result(SCENARIO_LOSSES[job.scenario], 0.0, job.total_paths)
+            baseline = _adjusted_baseline(
+                SCENARIO_LOSSES[job.scenario],
+                job.volatility_scale,
+                job.hedge_ratio_percent,
+            )
+            job.result = _build_result(baseline, 0.0, job.total_paths)
             job.error = None
         return job
 
     @staticmethod
     def _task_command(request: SimulationRequest, index: int, partitions: int) -> str:
         samples = max(1, request.paths // partitions)
+        mean = -0.024 * (1 - request.hedge_ratio_percent / 100 * 0.8)
+        sigma = 0.18 * request.volatility_scale
         code = (
             "import json,random,statistics;"
             f"r=random.Random({index});"
-            f"x=[r.gauss(-0.024,0.18) for _ in range({samples})];"
+            f"x=[r.gauss({mean},{sigma}) for _ in range({samples})];"
             "x.sort();"
             "n=max(1,int(len(x)*0.01));"
             "print(json.dumps({'mean':statistics.fmean(x),'tail':statistics.fmean(x[:n]),'count':len(x)}))"
         )
         return f'/bin/bash -c "python3 -c \\"{code}\\""'
-
