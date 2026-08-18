@@ -1,0 +1,72 @@
+from datetime import datetime
+from enum import Enum
+from typing import Literal
+
+from pydantic import BaseModel, Field
+
+
+class ShockScenario(str, Enum):
+    LEHMAN = "lehman"
+    YEN_SURGE = "yen-surge"
+    RATE_SPIKE = "rate-spike"
+    CUSTOM = "custom"
+
+
+class JobStatus(str, Enum):
+    QUEUED = "queued"
+    SCALING = "scaling"
+    RUNNING = "running"
+    VERIFYING = "verifying"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class SimulationRequest(BaseModel):
+    scenario: ShockScenario = ShockScenario.LEHMAN
+    paths: int = Field(default=5_000_000, ge=100_000, le=50_000_000)
+    target_nodes: int = Field(default=120, ge=1, le=1000)
+    execution_mode: Literal["local", "azure"] | None = None
+
+
+class HedgeRecommendation(BaseModel):
+    name: str
+    predicted_loss_billion_yen: float
+    verified_loss_billion_yen: float
+    error_percent: float
+    hedge_cost_billion_yen: float
+
+
+class SimulationResult(BaseModel):
+    baseline_loss_billion_yen: float
+    value_at_risk_billion_yen: float
+    expected_shortfall_billion_yen: float
+    elapsed_seconds: float
+    estimated_legacy_seconds: int
+    estimated_cost_yen: int
+    evaluations_per_second: int
+    recommendations: list[HedgeRecommendation]
+    loss_contributors: dict[str, float]
+
+
+class SimulationJob(BaseModel):
+    id: str
+    scenario: ShockScenario
+    execution_mode: Literal["local", "azure"]
+    status: JobStatus
+    progress: int
+    active_nodes: int
+    completed_paths: int
+    total_paths: int
+    target_nodes: int
+    created_at: datetime
+    updated_at: datetime
+    result: SimulationResult | None = None
+    error: str | None = None
+
+
+class RuntimeConfiguration(BaseModel):
+    default_execution_mode: Literal["local", "azure"]
+    azure_batch_configured: bool
+    azure_batch_pool_id: str
+    missing_azure_settings: list[str]
+

@@ -1,0 +1,41 @@
+from functools import lru_cache
+from typing import Literal
+
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=(".env", "../.env"),
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    app_env: str = "development"
+    port: int = 8000
+    cors_origins: str = "http://localhost:5173"
+    execution_mode: Literal["local", "azure"] = "local"
+    azure_batch_account_url: str = ""
+    azure_batch_account_name: str = ""
+    azure_batch_account_key: str = Field(default="", repr=False)
+    azure_batch_pool_id: str = "finance-hpc-pool"
+
+    @property
+    def allowed_origins(self) -> list[str]:
+        return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
+
+    def azure_batch_missing_settings(self) -> list[str]:
+        required = {
+            "AZURE_BATCH_ACCOUNT_URL": self.azure_batch_account_url,
+            "AZURE_BATCH_ACCOUNT_NAME": self.azure_batch_account_name,
+            "AZURE_BATCH_ACCOUNT_KEY": self.azure_batch_account_key,
+            "AZURE_BATCH_POOL_ID": self.azure_batch_pool_id,
+        }
+        return [name for name, value in required.items() if not value]
+
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()
+
