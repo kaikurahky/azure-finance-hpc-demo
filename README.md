@@ -133,7 +133,7 @@ az account show \
 
 <https://ca-finhpc-dev-28e5.graydesert-bcea4ea3.japaneast.azurecontainerapps.io>
 
-Container Appsは課金を抑えるため最小レプリカ数を0にしています。しばらくアクセスがない状態から開くと、最初の表示に30～60秒程度かかる場合があります。
+Container Appsは課金を抑えるため最小レプリカ数を0にしています。そのため、しばらくアクセスがない状態ではアプリが停止しており、最初のアクセス時にCold Start（コンテナの起動）が発生します。最初の表示には30～60秒程度かかる場合があり、ブラウザーや`curl`が先にタイムアウトすることがあります。表示されない場合は、30秒ほど待ってからページを再読み込みしてください。
 
 CLIで確認する場合:
 
@@ -185,7 +185,12 @@ az containerapp show \
 
 ### Step 5: Batchクォータとプールを確認する
 
-このデモは10台の`Standard_F8s_v2`を使用するため、Low Priorityコアが最低80必要です。現在の設定値は150コアです。
+このデモは`Standard_F8s_v2`（8コア）を使用します。画面のAzure Batch設定では、次の2つの実行モードを選択できます。
+
+- **Auto Scale**: 従来どおり、計算ノード0台から開始し、保留タスクに応じて最大10台まで自動的に増減します。コストを抑えられますが、Azure Batchの自動スケール評価間隔（最短5分）とノード起動時間が発生します。
+- **Always On**: 専用プールをLow Priority 10台で常時起動し、ジョブ投入後すぐに実行できるようにします。待ち時間を短縮できますが、アイドル中もノード料金が発生し、Low Priorityの容量・クォータを継続して使用します。
+
+2つのプールを同時にデプロイする場合、Low Priorityコアは最大160（Auto Scale最大80 + Always On 80）必要です。現在の設定値150コアでは、Always Onプールを含む初回デプロイがクォータ不足になる可能性があります。必要に応じてクォータを増加するか、`infra/modules/batch.bicep`のノード数を調整してください。
 
 ```bash
 az batch account show \
@@ -203,8 +208,8 @@ az batch account show \
 次を確認します。
 
 - `state`: `Succeeded`
-- `lowPriorityCoreQuota`: 80以上
-- `poolQuota`: 1以上
+- `lowPriorityCoreQuota`: 160以上（推奨申請値は200）
+- `poolQuota`: 2以上
 
 続いてプールを確認します。
 
@@ -300,7 +305,9 @@ Azure Portalを併用すると、「画面上の進捗表示だけでなく、�
 4. AI提案を厳密検証中
 5. 分析完了
 
-プールが0ノードから起動する場合、最初のジョブには通常3～8分程度かかります。しばらく0%のままでも、AzureがVMを準備している間は正常です。
+デモ中に計算処理を確認できるよう、各Azure Batchタスクは計算前に意図的に180秒待機します。そのため、Always Onプールではジョブ投入や結果集計を含めて約3分強が目安です。
+
+Auto Scaleプールが0ノードから起動する場合は、この約3分にVMの準備時間が加わり、最初のジョブには通常6～11分程度かかります。しばらく0%のままでも、AzureがVMを準備している間は正常です。
 
 待ち時間にはAzure PortalのBatch画面を見せます。
 
@@ -345,7 +352,7 @@ Azure Portalを併用すると、「画面上の進捗表示だけでなく、�
 
 「AI候補で2回目のAzure Batchを実行」をクリックします。
 
-2回目もAzure Batchへ別のジョブとして投入されます。最初のジョブで起動したノードがまだ利用可能であれば、2回目は比較的短時間で始まります。
+2回目もAzure Batchへ別のジョブとして投入され、1回目と同様に各タスクが約3分動作します。最初のジョブで起動したノードがまだ利用可能であれば、ノード準備を待たずに始まり、全体では約3分強が目安です。
 
 ボタンを連続してクリックする必要はありません。ジョブ投入中はボタンが無効になります。
 
@@ -857,17 +864,17 @@ az batch account show \
 続行条件:
 
 - `state`: `Succeeded`
-- `lowPriorityCoreQuota`: 80以上
-- `poolQuota`: 1以上
+- `lowPriorityCoreQuota`: 160以上（推奨申請値は200）
+- `poolQuota`: 2以上
 
-`lowPriorityCoreQuota`が80未満の場合は、ここで停止します。
+`lowPriorityCoreQuota`が160未満の場合は、ここで停止します。
 
-Azure Portalで次を確認し、必要に応じて150コアを申請します。
+Azure Portalで次を確認し、200コアへの増加を申請します。
 
 1. `bthfinhpcdev28e5`を開く
 2. QuotasまたはPropertiesで現在値を確認
-3. Low Priority coresの増加を申請
-4. 承認後、上のCLIコマンドで80以上になったことを再確認
+3. Low Priority coresを200へ増加申請
+4. 承認後、上のCLIコマンドで160以上になったことを再確認
 
 クォータが不足したまま`deployBatchPool=true`を実行しないでください。
 
@@ -922,7 +929,8 @@ az acr build \
 
 最終段階では次を反映します。
 
-- Batchプールを0～10ノードで作成
+- Auto Scaleプールを0～10ノードで作成
+- Always OnプールをLow Priority 10ノード固定で作成
 - Container Appを実アプリのイメージへ切り替え
 - Container Appのポートを8000へ切り替え
 - `/healthz`と`/readyz`のプローブを有効化
@@ -946,7 +954,8 @@ az deployment sub what-if \
 
 次を確認します。
 
-- Batch Poolが`Create`
+- Always On Batch Poolが`Create`
+- 既存Auto Scale Batch Poolに意図しない変更がない
 - Container Appのイメージが`$CONTAINER_IMAGE`へ変更
 - オートスケール式の上限が10
 - リソースの`Delete`がない
@@ -1034,11 +1043,12 @@ curl --fail --location --max-time 60 "$DEMO_URL/readyz"
 
 1. `Azure Risk Simulation Portal`が表示される
 2. `Local Cluster`と`Azure Batch`を選択できる
-3. 目標ノードが10
-4. Azure Batchを選んで1回目のジョブを実行できる
-5. `AI NEXT PARAMETER`が表示される
-6. 2回目のAzure Batchジョブを投入できる
-7. 1回目と2回目のVaR比較が表示される
+3. Azure Batchで`Auto Scale`と`Always On`を選択できる
+4. `Always On`を選ぶと計算ノードが「10台常時」と表示される
+5. Azure Batchを選んで1回目のジョブを実行できる
+6. `AI NEXT PARAMETER`が表示される
+7. 2回目のAzure Batchジョブを投入できる
+8. 1回目と2回目のVaR比較が表示される
 
 ジョブ中はページを再読み込みしないでください。
 
@@ -1067,6 +1077,64 @@ az resource show \
 - `dedicatedNodes`: `0`
 - `lowPriorityNodes`: `0`
 
+### Always Onの10台を停止・再開する
+
+Always Onプールはジョブがない間もLow Priorityノード10台を維持するため、デモを使用しない期間は手動で0台へリサイズすると課金を抑えられます。
+
+Azure Portalから停止する場合:
+
+1. Azure Portalで`bthfinhpcdev28e5`を開く
+2. **Pools**を選択
+3. `pool-finhpc-alwayson-28e5`を開く
+4. **Scale**を選択
+5. Fixed scaleのLow-priority nodesを`0`に変更して保存
+
+CLIから停止する場合は、最初にMicrosoft Entra ID認証でBatchアカウントへログインします。
+
+```bash
+az batch account login \
+  --subscription 02822f3b-51ae-46e7-b446-9d74b942e87c \
+  --resource-group rg-finhpc-dev-28e5 \
+  --name bthfinhpcdev28e5
+
+az batch pool resize \
+  --pool-id pool-finhpc-alwayson-28e5 \
+  --target-dedicated-nodes 0 \
+  --target-low-priority-nodes 0 \
+  --node-deallocation-option taskcompletion
+```
+
+`taskcompletion`を指定すると、実行中のタスクが完了してからノードを削除します。タスクを直ちに終了してよい場合を除き、`terminate`は使用しないでください。
+
+停止状態を確認します。
+
+```bash
+az batch pool show \
+  --pool-id pool-finhpc-alwayson-28e5 \
+  --query '{
+    allocationState:allocationState,
+    currentLowPriorityNodes:currentLowPriorityNodes,
+    targetLowPriorityNodes:targetLowPriorityNodes
+  }' \
+  -o table
+```
+
+`allocationState`が`steady`、`currentLowPriorityNodes`と`targetLowPriorityNodes`が`0`になれば停止完了です。
+
+再び10台を起動する場合:
+
+```bash
+az batch pool resize \
+  --pool-id pool-finhpc-alwayson-28e5 \
+  --target-dedicated-nodes 0 \
+  --target-low-priority-nodes 10
+```
+
+起動には数分かかる場合があります。`allocationState`が`steady`、`currentLowPriorityNodes`が`10`になってからAlways Onモードのジョブを投入してください。
+
+> [!IMPORTANT]
+> 手動で0台へリサイズしても、`infra/modules/batch.bicep`ではAlways Onプールを10台と定義しています。そのため、次回Bicepをデプロイすると10台へ戻ります。また、0台の状態で画面からAlways Onモードのジョブを投入すると、ノードを再起動するまでジョブは待機します。
+
 ### 再構築完了チェックリスト
 
 - [ ] Resource Providerが登録済み
@@ -1074,7 +1142,7 @@ az resource show \
 - [ ] ACR、Storage、Batch、Key Vaultの名前が利用可能
 - [ ] 第1段階のWhat-IfにDeleteがない
 - [ ] 第1段階のデプロイがSucceeded
-- [ ] Batch Low Priorityクォータが80以上
+- [ ] Batch Low Priorityクォータが160以上（推奨200）
 - [ ] `AcrPull`と`Azure Batch Data Contributor`を確認
 - [ ] ACRビルドがSucceeded
 - [ ] 最終What-IfにDeleteがない

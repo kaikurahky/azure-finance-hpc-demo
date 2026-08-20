@@ -15,6 +15,7 @@ param containerAppName string
 param containerRegistryName string
 param batchAccountName string
 param batchPoolName string
+param alwaysOnBatchPoolName string
 param storageAccountName string
 param keyVaultName string
 param logAnalyticsName string
@@ -95,7 +96,8 @@ module batch './modules/batch.bicep' = {
     location: location
     accountName: batchAccountName
     deployPool: deployBatchPool
-    poolName: batchPoolName
+    autoscalePoolName: batchPoolName
+    alwaysOnPoolName: alwaysOnBatchPoolName
     tags: tags
   }
 }
@@ -127,6 +129,7 @@ module containerApp './modules/container-app.bicep' = {
     applicationInsightsConnectionString: applicationInsights.outputs.connectionString
     batchAccountEndpoint: batch.outputs.accountEndpoint
     batchPoolName: batchPoolName
+    alwaysOnBatchPoolName: alwaysOnBatchPoolName
   }
   dependsOn: [
     containerEnvironment

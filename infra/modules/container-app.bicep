@@ -6,6 +6,7 @@ param registryName string
 param applicationInsightsConnectionString string
 param batchAccountEndpoint string
 param batchPoolName string
+param alwaysOnBatchPoolName string
 param containerImage string = 'mcr.microsoft.com/azuredocs/containerapps-helloworld:latest'
 
 var placeholderImage = 'mcr.microsoft.com/azuredocs/containerapps-helloworld:latest'
@@ -33,6 +34,7 @@ resource containerApp 'Microsoft.App/containerApps@2026-01-01' = {
       activeRevisionsMode: 'Single'
       ingress: {
         allowInsecure: false
+        exposedPort: 0
         external: true
         targetPort: isPlaceholder ? 80 : appPort
         transport: 'Auto'
@@ -80,8 +82,16 @@ resource containerApp 'Microsoft.App/containerApps@2026-01-01' = {
               value: 'https://${batchAccountEndpoint}'
             }
             {
-              name: 'AZURE_BATCH_POOL_ID'
+              name: 'AZURE_BATCH_AUTOSCALE_POOL_ID'
               value: batchPoolName
+            }
+            {
+              name: 'AZURE_BATCH_ALWAYS_ON_POOL_ID'
+              value: alwaysOnBatchPoolName
+            }
+            {
+              name: 'BATCH_TASK_DELAY_SECONDS'
+              value: '180'
             }
             {
               name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
@@ -119,8 +129,10 @@ resource containerApp 'Microsoft.App/containerApps@2026-01-01' = {
         }
       ]
       scale: {
+        cooldownPeriod: 300
         minReplicas: 0
         maxReplicas: 1
+        pollingInterval: 30
         rules: [
           {
             name: 'http-scaling'

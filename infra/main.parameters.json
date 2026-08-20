@@ -35,6 +35,9 @@
     "batchPoolName": {
       "value": "pool-finhpc-dev-28e5"
     },
+    "alwaysOnBatchPoolName": {
+      "value": "pool-finhpc-alwayson-28e5"
+    },
     "storageAccountName": {
       "value": "stfinhpcdev28e5"
     },
@@ -49,4 +52,3 @@
     }
   }
 }
-

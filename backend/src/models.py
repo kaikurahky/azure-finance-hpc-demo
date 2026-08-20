@@ -21,11 +21,15 @@ class JobStatus(str, Enum):
     FAILED = "failed"
 
 
+PoolMode = Literal["autoscale", "always-on"]
+
+
 class SimulationRequest(BaseModel):
     scenario: ShockScenario = ShockScenario.LEHMAN
     paths: int = Field(default=5_000_000, ge=100_000, le=50_000_000)
     target_nodes: int = Field(default=10, ge=1, le=10)
     execution_mode: Literal["local", "azure"] | None = None
+    pool_mode: PoolMode = "autoscale"
     iteration: int = Field(default=1, ge=1, le=2)
     parent_job_id: str | None = None
     volatility_scale: float = Field(default=1.0, ge=0.5, le=2.0)
@@ -56,6 +60,7 @@ class SimulationJob(BaseModel):
     id: str
     scenario: ShockScenario
     execution_mode: Literal["local", "azure"]
+    pool_mode: PoolMode = "autoscale"
     status: JobStatus
     progress: int
     active_nodes: int
@@ -77,6 +82,7 @@ class AiSimulationCandidate(BaseModel):
     scenario: ShockScenario
     paths: int
     target_nodes: int
+    pool_mode: PoolMode
     volatility_scale: float
     hedge_ratio_percent: float
     predicted_loss_billion_yen: float

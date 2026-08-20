@@ -25,6 +25,7 @@ def infer_next_candidate(job: SimulationJob) -> AiSimulationCandidate:
         scenario=job.scenario,
         paths=job.total_paths,
         target_nodes=10,
+        pool_mode=job.pool_mode,
         volatility_scale=volatility_scale,
         hedge_ratio_percent=hedge_ratio,
         predicted_loss_billion_yen=round(predicted_loss, 1),

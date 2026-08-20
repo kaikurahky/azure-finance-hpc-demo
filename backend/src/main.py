@@ -45,7 +45,7 @@ def runtime_configuration() -> RuntimeConfiguration:
     return RuntimeConfiguration(
         default_execution_mode=settings.execution_mode,
         azure_batch_configured=not missing,
-        azure_batch_pool_id=settings.azure_batch_pool_id,
+        azure_batch_pool_id=settings.azure_batch_autoscale_pool_id,
         missing_azure_settings=missing,
     )
 

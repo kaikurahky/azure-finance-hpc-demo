@@ -3,7 +3,12 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 from azure.batch import BatchServiceClient
-from azure.batch.models import BatchErrorException, JobAddParameter, PoolInformation, TaskAddParameter
+from azure.batch.models import (
+    BatchErrorException,
+    JobAddParameter,
+    PoolInformation,
+    TaskAddParameter,
+)
 from azure.identity import DefaultAzureCredential
 from msrest.authentication import BasicTokenAuthentication
 
@@ -49,12 +54,17 @@ class AzureBatchSimulationService:
         client = self._client()
         app_job_id = str(uuid4())
         batch_job_id = f"finance-risk-{app_job_id[:8]}"
+        pool_id = (
+            self.settings.azure_batch_always_on_pool_id
+            if request.pool_mode == "always-on"
+            else self.settings.azure_batch_autoscale_pool_id
+        )
         partitions = min(request.target_nodes, 200)
         try:
             client.job.add(
                 JobAddParameter(
                     id=batch_job_id,
-                    pool_info=PoolInformation(pool_id=self.settings.azure_batch_pool_id),
+                    pool_info=PoolInformation(pool_id=pool_id),
                 )
             )
             tasks = [
@@ -75,6 +85,7 @@ class AzureBatchSimulationService:
             id=app_job_id,
             scenario=request.scenario,
             execution_mode="azure",
+            pool_mode=request.pool_mode,
             status=JobStatus.QUEUED,
             progress=0,
             active_nodes=0,
@@ -89,7 +100,7 @@ class AzureBatchSimulationService:
             updated_at=now,
         )
         self.jobs[app_job_id] = job
-        job.error = json.dumps({"batchJobId": batch_job_id})
+        job.error = json.dumps({"batchJobId": batch_job_id, "poolId": pool_id})
         return job
 
     def get(self, job_id: str) -> SimulationJob | None:
@@ -116,12 +127,14 @@ class AzureBatchSimulationService:
                 job.volatility_scale,
                 job.hedge_ratio_percent,
             )
-            job.result = _build_result(baseline, 0.0, job.total_paths)
+            elapsed = (job.updated_at - job.created_at).total_seconds()
+            job.result = _build_result(baseline, elapsed, job.total_paths)
             job.error = None
         return job
 
-    @staticmethod
-    def _task_command(request: SimulationRequest, index: int, partitions: int) -> str:
+    def _task_command(
+        self, request: SimulationRequest, index: int, partitions: int
+    ) -> str:
         samples = max(1, request.paths // partitions)
         mean = -0.024 * (1 - request.hedge_ratio_percent / 100 * 0.8)
         sigma = 0.18 * request.volatility_scale
@@ -133,4 +146,7 @@ class AzureBatchSimulationService:
             "n=max(1,int(len(x)*0.01));"
             "print(json.dumps({'mean':statistics.fmean(x),'tail':statistics.fmean(x[:n]),'count':len(x)}))"
         )
-        return f'/bin/bash -c "python3 -c \\"{code}\\""'
+        return (
+            f'/bin/bash -c "sleep {self.settings.batch_task_delay_seconds} && '
+            f'python3 -c \\"{code}\\""'
+        )

@@ -18,6 +18,7 @@ import {
 import { formatPathCount } from "./format";
 
 type Mode = "local" | "azure";
+type PoolMode = "autoscale" | "always-on";
 type Scenario = "lehman" | "yen-surge" | "rate-spike" | "custom";
 type JobStatus = "queued" | "scaling" | "running" | "verifying" | "completed" | "failed";
 
@@ -47,6 +48,7 @@ interface SimulationJob {
   completed_paths: number;
   total_paths: number;
   target_nodes: number;
+  pool_mode: PoolMode;
   volatility_scale: number;
   hedge_ratio_percent: number;
   error: string | null;
@@ -68,6 +70,7 @@ interface AiSimulationCandidate {
   scenario: Scenario;
   paths: number;
   target_nodes: number;
+  pool_mode: PoolMode;
   volatility_scale: number;
   hedge_ratio_percent: number;
   predicted_loss_billion_yen: number;
@@ -93,6 +96,7 @@ const statusLabels: Record<JobStatus, string> = {
 export function App() {
   const [scenario, setScenario] = useState<Scenario>("lehman");
   const [mode, setMode] = useState<Mode>("local");
+  const [poolMode, setPoolMode] = useState<PoolMode>("autoscale");
   const [config, setConfig] = useState<RuntimeConfig | null>(null);
   const [job, setJob] = useState<SimulationJob | null>(null);
   const [firstJob, setFirstJob] = useState<SimulationJob | null>(null);
@@ -151,7 +155,13 @@ export function App() {
     const response = await fetch("/api/simulations", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ scenario, paths: 5_000_000, target_nodes: 10, execution_mode: mode }),
+      body: JSON.stringify({
+        scenario,
+        paths: 5_000_000,
+        target_nodes: 10,
+        execution_mode: mode,
+        pool_mode: poolMode,
+      }),
     });
     const body = await response.json();
     if (!response.ok) {
@@ -176,6 +186,7 @@ export function App() {
           paths: candidate.paths,
           target_nodes: candidate.target_nodes,
           execution_mode: "azure",
+          pool_mode: candidate.pool_mode,
           iteration: 2,
           parent_job_id: candidate.source_job_id,
           volatility_scale: candidate.volatility_scale,
@@ -208,7 +219,7 @@ export function App() {
       <header className="topbar">
         <div className="brand">
           <div className="brand-mark"><TrendingDown size={21} /></div>
-          <div><strong>MARKET SHOCK</strong><span>WAR ROOM</span></div>
+          <div><strong>MARKET SHOCK ANALYSES</strong><span>WAR ROOM</span></div>
         </div>
         <div className="header-actions">
           <button className="text-button" onClick={() => setView("architecture")}><Network size={16} />構成を見る</button>
@@ -254,9 +265,20 @@ export function App() {
               <Zap /><strong>Azure Batch</strong><span>{config?.azure_batch_configured ? "実リソースで実行" : "Azure設定が必要"}</span>
             </button>
           </div>
+          {mode === "azure" && (
+            <div className="pool-mode">
+              <span>計算ノードの起動方式</span>
+              <button className={poolMode === "autoscale" ? "selected" : ""} onClick={() => setPoolMode("autoscale")}>
+                <strong>Auto Scale</strong><small>0台から必要時に増強</small>
+              </button>
+              <button className={poolMode === "always-on" ? "selected" : ""} onClick={() => setPoolMode("always-on")}>
+                <strong>Always On</strong><small>10台を常時起動</small>
+              </button>
+            </div>
+          )}
           <div className="workload">
             <div><span>Monte Carlo</span><b>5,000,000</b></div>
-            <div><span>目標ノード</span><b>10</b></div>
+            <div><span>計算ノード</span><b>{poolMode === "always-on" ? "10台常時" : "0→10"}</b></div>
             <div><span>従来所要時間</span><b>4h 20m</b></div>
           </div>
           <button className="run-button" disabled={Boolean(running)} onClick={runSimulation}>
