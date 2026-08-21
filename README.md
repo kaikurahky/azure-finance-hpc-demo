@@ -75,25 +75,187 @@ AIサロゲートが次候補を推論
 1回目と2回目のVaRを比較
         |
         v
-Batchプールを0ノードへ自動縮退
+Auto Scaleは0ノードへ縮退
+Always Onは10ノードを維持
 ```
 
 AI部分は、イベントでの再現性を優先した決定論的サロゲートモデルです。外部の生成AIサービスは呼び出していません。1回目のExpected ShortfallとHPC検証済みヘッジ候補から、2回目に使うヘッジ比率とボラティリティ倍率を推論します。
 
 ## Azure構成
 
+### システム全体構成図
+
+以下は、BicepでJapan Eastのリソースグループ`rg-finhpc-dev-28e5`へ展開する構成です。実線はデモ実行時の主な通信、破線はデプロイまたは監視の経路を表します。
+
+```mermaid
+flowchart LR
+  User[デモ実施者<br/>Webブラウザー]
+
+  subgraph Azure[Azure / Japan East]
+    subgraph RG[Resource Group: rg-finhpc-dev-28e5]
+      subgraph CAE[Azure Container Apps Environment]
+        CA[Container App<br/>ca-finhpc-dev-28e5<br/>0.5 vCPU / 1 GiB<br/>min 0 / max 1 replica]
+        UI[React UI<br/>静的ファイル]
+        API[FastAPI<br/>ジョブ投入・状態集約]
+        AI[AIサロゲート<br/>次候補パラメータ推論]
+        Memory[インメモリ状態<br/>ジョブID・結果]
+
+        CA --- UI
+        CA --- API
+        API --- AI
+        API --- Memory
+      end
+
+      ACR[Azure Container Registry<br/>crfinhpcdev28e5<br/>アプリイメージ]
+
+      subgraph Batch[Azure Batch Account: bthfinhpcdev28e5]
+        Job[Batch Job<br/>finance-risk-*]
+        AutoPool[Auto Scale Pool<br/>Standard_F8s_v2<br/>Low Priority 0～10台]
+        WarmPool[Always On Pool<br/>Standard_F8s_v2<br/>Low Priority 10台]
+        Tasks[Monte Carlo Tasks<br/>mc-0000 ～ mc-0009<br/>180秒待機後に計算]
+
+        Job -->|選択したプール| AutoPool
+        Job -->|選択したプール| WarmPool
+        AutoPool --> Tasks
+        WarmPool --> Tasks
+        Tasks -->|Task状態| Job
+      end
+
+      AppInsights[Application Insights<br/>接続情報]
+      Logs[Log Analytics Workspace<br/>Container Apps環境ログ]
+      Storage[Storage Account<br/>将来の結果永続化用]
+      KV[Key Vault<br/>将来のシークレット管理用]
+    end
+  end
+
+  User -->|HTTPS / 画面・REST API| CA
+  API -->|Microsoft Entraトークン<br/>Job作成・Task登録・状態取得| Job
+  Job -->|Task状態| API
+  ACR -.->|Managed Identity / AcrPull<br/>リビジョン起動時に取得| CA
+  CA -.->|接続文字列| AppInsights
+  CAE -.->|環境ログ| Logs
+```
+
+### 各Azureサービスの役割
+
 | Azureサービス | 役割 |
 |---|---|
-| Azure Container Apps | React画面とFastAPIを同一コンテナで実行 |
-| Azure Container Registry | デモ用コンテナイメージを保存 |
-| Azure Batch | Monte Carloジョブとタスクを管理 |
-| Batch Pool | `Standard_F8s_v2`を0～10ノードで自動スケール |
-| Azure Storage | Batch関連データと結果保存用の領域 |
-| Azure Key Vault | 将来のシークレットをRBACで管理 |
-| Application Insights | APIの応答や失敗を監視 |
-| Log Analytics | Container Appsのログを集中管理 |
+| Azure Container Apps | React画面とFastAPIを1つのコンテナで実行し、Batchジョブの投入、状態取得、AI候補推論、結果表示を統括 |
+| Azure Container Registry | ビルド済みコンテナイメージを保存。Container Appのシステム割り当てマネージドIDに`AcrPull`を付与 |
+| Azure Batch Account | Monte Carloジョブと10個のタスクを管理し、選択されたプールへ割り当て |
+| Auto Scale Pool | `Standard_F8s_v2` Low Priorityを保留タスク数に応じて0～10ノードへ増減。評価間隔は5分 |
+| Always On Pool | `Standard_F8s_v2` Low Priorityを10ノード固定で確保し、ノード起動待ちを減らすデモ用プール |
+| Azure Storage | 将来、入力データ、Task出力、結果を永続化するために確保。現在のデモ実行経路では未使用 |
+| Azure Key Vault | 将来のシークレット管理用に確保。現在のBatch認証はシークレットではなくマネージドIDを使用 |
+| Application Insights | 接続文字列をContainer Appへ設定。アプリケーション監視を拡張するための基盤 |
+| Log Analytics | Container Apps Environmentに接続し、コンテナと環境のログを集中管理 |
+
+### Container App内部の役割
+
+Container App `ca-finhpc-dev-28e5`では、1つのコンテナ内で次の処理を実行します。
+
+1. **React UIの配信**: FastAPIの静的ファイルとしてビルド済み画面を返します。
+2. **シミュレーションAPI**: `POST /api/simulations`で実行要求を受け付けます。
+3. **Batchオーケストレーション**: Batch Jobを作成し、目標ノード数に合わせて最大10個の`mc-*` Taskを登録します。
+4. **状態集約**: ブラウザーから5秒ごとに呼ばれる`GET /api/simulations/{job_id}`を契機に、BatchのTask状態を取得して進捗へ変換します。
+5. **AI候補推論**: 1回目の完了結果から、2回目に使うヘッジ比率とボラティリティ倍率を決定します。外部AIサービスは呼び出しません。
+6. **結果生成**: 全Taskの完了後、デモ用の損失、VaR、Expected Shortfall、ヘッジ候補を生成して画面へ返します。
+
+Container AppはSingle Revision、外部HTTPS Ingress、ポート8000で動作します。課金を抑えるため通常は`minReplicas: 0`、`maxReplicas: 1`です。Gunicornも1ワーカーで動作し、ジョブ対応表をメモリ上に保持します。このため、**シミュレーション実行中にページを再読み込みしたり、Container Appのリビジョンを更新したりしないでください**。
+
+### Azure Batch内部の役割
+
+1回のシミュレーション要求では、Container Appが`finance-risk-*`というBatch Jobを1つ作成します。デフォルトの`target_nodes`は10なので、Jobには`mc-0000`から`mc-0009`までの10 Taskが登録されます。
+
+各TaskはLinuxノード上で次の順に動作します。
+
+1. `BATCH_TASK_DELAY_SECONDS=180`の設定に従い、デモで実行中の状態を見せるため180秒待機
+2. Taskごとに異なる乱数シードでMonte Carloサンプルを生成
+3. 平均値と下方1%の平均値を計算
+4. JSONをTaskの標準出力へ書き込み、Taskを完了
+
+デモでは、シナリオとヘッジ条件を全Taskで共有し、乱数シードと担当パスを分割します。10ノードを指定した場合でも、Batchスケジューラーが実際のTask配置を決めるため、「1 Taskが必ず1台の専用ノードを占有する」という意味ではありません。
+
+プールは画面から次のどちらかを選択します。
+
+| プール | ノード設定 | 向いている場面 | 注意点 |
+|---|---:|---|---|
+| Auto Scale | Low Priority 0～10台 | 通常運用、デモ後の費用を抑えたい場合 | 5分の評価間隔とVM起動時間が加わる |
+| Always On | Low Priority 10台固定 | 登壇デモで約3分の計算をすぐ開始したい場合 | アイドル中も料金と80コアのクォータを消費する |
+
+### 2段階シミュレーションの動作シーケンス
+
+```mermaid
+sequenceDiagram
+  autonumber
+  actor User as デモ実施者
+  participant UI as React UI
+  participant API as FastAPI on Container App
+  participant ID as Managed Identity / Microsoft Entra ID
+  participant Batch as Azure Batch Service
+  participant Pool as 選択したBatch Pool
+  participant Task as 10 Monte Carlo Tasks
+  participant AI as Container App内AIサロゲート
+
+  User->>UI: 市場ショックとPoolを選択
+  User->>UI: 緊急リスク分析を開始
+  UI->>API: POST /api/simulations<br/>iteration=1, paths=5,000,000, nodes=10
+  API->>ID: Batch用アクセストークン取得
+  ID-->>API: Entra IDトークン
+  API->>Batch: Job finance-risk-* を作成
+  API->>Batch: mc-0000～mc-0009を一括登録
+  Batch->>Pool: JobをAuto ScaleまたはAlways Onへ割り当て
+  Pool->>Task: Taskをノードへスケジュール
+  Task->>Task: 180秒待機後、Monte Carlo計算
+
+  loop 1回目が完了するまで5秒ごと
+    UI->>API: GET /api/simulations/{job_id}
+    API->>Batch: Task一覧と状態を取得
+    Batch-->>API: Active / Running / Completed
+    API-->>UI: 進捗、稼働Task数、完了パス数
+  end
+
+  Task-->>Batch: 全Task Completed
+  API->>API: 損失・VaR・Expected Shortfallを生成
+  API-->>UI: 1回目の結果
+  UI->>API: POST /api/simulations/{job_id}/next-candidate
+  API->>AI: 1回目の結果と検証済みヘッジ候補を入力
+  AI-->>API: ヘッジ比率・ボラティリティ倍率
+  API-->>UI: AI NEXT PARAMETER
+
+  User->>UI: AI候補で2回目を実行
+  UI->>API: POST /api/simulations<br/>iteration=2, AI候補パラメータ
+  API->>Batch: 新しいJobと10 Taskを登録
+  Batch->>Pool: 1回目と同じPoolへ割り当て
+  Pool->>Task: 2回目のTaskを実行
+  Task->>Task: 180秒待機後、候補条件で計算
+
+  loop 2回目が完了するまで5秒ごと
+    UI->>API: GET /api/simulations/{job_id}
+    API->>Batch: Task状態を取得
+    Batch-->>API: Task状態
+    API-->>UI: 2回目の進捗
+  end
+
+  API-->>UI: 2回目の結果とVaR改善量
+  UI-->>User: 1回目と2回目を比較表示
+```
+
+### 認証とアクセス制御
 
 Container AppからAzure Batchへの接続には、共有キーではなくマネージドIDとMicrosoft Entra IDを利用します。
+
+- Container Appのシステム割り当てマネージドIDに、Batch Accountスコープの`Azure Batch Data Contributor`を付与
+- 同じマネージドIDに、Container Registryスコープの`AcrPull`を付与
+- Batch SDKは`DefaultAzureCredential`で`https://batch.core.windows.net/.default`のトークンを取得
+- Batch AccountはAAD認証のみを許可し、アプリコードや環境変数へ共有キーを保存しない
+- Key Vaultに対する`Key Vault Secrets Officer`はデプロイ実施者へ付与され、Container AppのBatch実行には使用しない
+
+### 現在のデモ実装でのデータ集約
+
+現在の実装では、Batch Taskが出力したJSONをContainer Appへ回収・集約してリスク値を算出するのではなく、Container Appが**全Taskの完了状態を確認した後**、同じシナリオパラメータから再現性のあるデモ用指標を生成します。これによりライブデモを安定させています。
+
+実運用へ発展させる場合は、各Taskの結果をAzure Storageへ保存し、集約TaskまたはContainer Appがそのデータを読み取ってVaRとExpected Shortfallを算出する構成に変更します。また、現在メモリ上にあるジョブ対応表もCosmos DBやTable Storageなどへ永続化する必要があります。
 
 ## Azure初心者向け: デモ開始前の準備
 
